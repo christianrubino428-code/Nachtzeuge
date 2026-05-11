@@ -205,6 +205,10 @@ let state = {
   voiceId: Storage.get('voiceId') || 'pNInz6obpgDQGcFmaJgB',
   brandName: Storage.get('brandName') || '🐦‍⬛ NACHTZEUGE',
   useMusic: Storage.get('useMusic') !== 'false',
+  useHookForge: Storage.get('useHookForge') === 'true', // Hook-Schmiede: 3 Hooks zur Auswahl
+  hookCandidates: [], // Die 3 generierten Hook-Vorschläge
+  selectedHookIndex: -1, // Welcher wurde ausgewählt
+  awaitingHookSelection: false, // Zwischen-Status: warte auf User-Auswahl
   story: null,
   audioBlob: null,
   audioDuration: 0,
@@ -597,6 +601,156 @@ function playDoneAlarm() {
   }
 }
 
+// ========== HOOK-SCHMIEDE ==========
+// Generiert 3 verschiedene Hook-Vorschläge - User wählt den besten
+async function generateHookCandidates() {
+  const genreObj = horrorGenres.find(g => g.id === state.genre);
+  const themeText = state.theme ? `Thema: ${state.theme}` : '';
+  
+  const prompt = `Du bist Profi für virale TikTok-Hooks im Horror-Genre.
+
+Erstelle 3 verschiedene KURZE, KNALLHARTE Hook-Sätze für eine ${genreObj.label} Story.
+${themeText}
+
+⚡ HOOK-REGELN:
+- GENAU 4-7 Wörter pro Hook (NIE mehr als 8!)
+- In GROSSBUCHSTABEN denken (wirkt wie Schlagzeile)
+- Erzeugt sofort: "WAS?? Erzähl mir mehr!"
+- Schock, Mystery, Unmöglichkeit
+
+⚡ NUTZE 3 VERSCHIEDENE STILE:
+
+STIL 1 - ZEITLICH/PRÄZISE:
+"UM 3:14 KAM ER ZURÜCK."
+"FREITAG, 23 UHR. WIE IMMER."
+"NACH 23 JAHREN STILLE."
+
+STIL 2 - ENTHÜLLUNG/SCHOCK:
+"DAS GRAB WAR LEER."
+"ER WAR SEIT JAHREN TOT."
+"ES WAR NICHT MEIN BRUDER."
+
+STIL 3 - DIREKTE HANDLUNG:
+"SIE STAND VOR MEINEM BETT."
+"ICH HÖRTE IHN ATMEN."
+"DIE TÜR WAR INNEN VERRIEGELT."
+
+Gib NUR ein JSON-Array zurück mit GENAU 3 Hook-Strings, sonst nichts:
+
+["HOOK 1", "HOOK 2", "HOOK 3"]
+
+Verschiedene Stile, alle kurz und brutal!`;
+
+  try {
+    const response = await callClaude(prompt);
+    // Extrahiere JSON-Array
+    let jsonText = response.trim();
+    // Entferne Markdown-Code-Blocks falls vorhanden
+    jsonText = jsonText.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+    // Finde das Array
+    const arrayMatch = jsonText.match(/\[[\s\S]*?\]/);
+    if (arrayMatch) jsonText = arrayMatch[0];
+    
+    const hooks = JSON.parse(jsonText);
+    if (!Array.isArray(hooks) || hooks.length < 3) {
+      throw new Error('Nicht genug Hooks generiert');
+    }
+    
+    state.hookCandidates = hooks.slice(0, 3).map(h => 
+      typeof h === 'string' ? h.trim().toUpperCase().replace(/[\.\!]+$/, '.') : 'HOOK'
+    );
+    
+    console.log('🪝 3 Hook-Kandidaten:', state.hookCandidates);
+  } catch (err) {
+    console.error('Hook-Generation fehlgeschlagen:', err);
+    // Fallback: simple Hooks
+    state.hookCandidates = [
+      'ER KAM JEDE NACHT.',
+      'DAS GRAB WAR LEER.',
+      'SIE STAND VOR MEINEM BETT.'
+    ];
+  }
+}
+
+async function selectHookAndContinue(hookIndex) {
+  if (hookIndex < 0 || hookIndex >= state.hookCandidates.length) return;
+  
+  state.selectedHookIndex = hookIndex;
+  state.awaitingHookSelection = false;
+  state.running = true;
+  state.step = 'running';
+  render();
+  
+  await requestWakeLock();
+  
+  try {
+    // Story mit dem ausgewählten Hook generieren
+    setStatus('📖 Story wird um den Hook geschrieben...', 8);
+    await generateStoryWithSelectedHook();
+    
+    setStatus('🔊 KI-Stimme wird erzeugt...', 20);
+    await generateAudio();
+    
+    setStatus('🎬 Videos/Bilder werden geladen...', 35);
+    await generateMedia();
+    
+    if (state.useMusic) {
+      setStatus('🎵 Hintergrund-Musik wird geladen...', 65);
+      await loadBackgroundMusic();
+    }
+    
+    setStatus('🎯 Cover wird erstellt...', 72);
+    await generateCover();
+    
+    setStatus('🎥 Video wird gerendert...', 80);
+    await renderFinalVideo();
+    
+    // 🔄 AUTO-MP4: Direkt nach Render zu echtem MP4 konvertieren (für TikTok!)
+    setStatus('🎬 MP4 für TikTok wird erstellt...', 92);
+    try {
+      const mp4Blob = await convertWebmToMp4(state.videoBlob, (status, progress) => {
+        const overallProgress = 92 + Math.floor(progress / 100 * 7);
+        setStatus(`🎬 ${status}`, overallProgress);
+      });
+      if (state.videoUrl) URL.revokeObjectURL(state.videoUrl);
+      state.videoBlob = mp4Blob;
+      state.videoUrl = URL.createObjectURL(mp4Blob);
+      state.videoFormat = 'mp4';
+      console.log('✅ Auto-konvertiert zu MP4');
+    } catch (mp4Err) {
+      console.warn('⚠️ Auto-MP4 fehlgeschlagen, WebM bleibt:', mp4Err.message);
+    }
+    
+    saveToLibrary();
+    
+    setStatus('✓ FERTIG!', 100);
+    state.step = 'done';
+    state.running = false;
+    render();
+    
+    playDoneAlarm();
+    await releaseWakeLock();
+  } catch (err) {
+    showError(err.message);
+    state.running = false;
+    state.step = 'setup';
+    render();
+    await releaseWakeLock();
+  }
+}
+
+async function generateStoryWithSelectedHook() {
+  // Spezial-Version von generateStory: Hook ist vorgegeben
+  const chosenHook = state.hookCandidates[state.selectedHookIndex];
+  
+  // Wir setzen den Hook als zusätzlichen Kontext im Prompt
+  state._predefinedHook = chosenHook;
+  await generateStory();
+  // Stelle sicher dass der gewählte Hook auch im Result steht
+  if (state.story) state.story.hook = chosenHook;
+  state._predefinedHook = null;
+}
+
 async function startGeneration() {
   if (!state.anthropicKey) {
     showError('Anthropic API-Key fehlt – in Einstellungen eintragen');
@@ -634,6 +788,20 @@ async function startGeneration() {
   }
 
   try {
+    // 🪝 HOOK-SCHMIEDE: Falls aktiviert, erst 3 Hooks generieren zur Auswahl
+    if (state.useHookForge) {
+      setStatus('🪝 Hook-Schmiede arbeitet...', 5);
+      await generateHookCandidates();
+      
+      // Wechsel zu Hook-Auswahl-Screen
+      state.step = 'hookSelection';
+      state.awaitingHookSelection = true;
+      state.running = false;
+      await releaseWakeLock();
+      render();
+      return; // Stop hier - User wählt Hook, dann continueGenerationWithHook()
+    }
+    
     setStatus('📖 Story wird geschrieben...', 5);
     await generateStory();
     
@@ -653,6 +821,24 @@ async function startGeneration() {
     
     setStatus('🎥 Video wird gerendert...', 80);
     await renderFinalVideo();
+    
+    // 🔄 AUTO-MP4: Direkt nach Render zu echtem MP4 konvertieren (für TikTok!)
+    setStatus('🎬 MP4 für TikTok wird erstellt...', 92);
+    try {
+      const mp4Blob = await convertWebmToMp4(state.videoBlob, (status, progress) => {
+        const overallProgress = 92 + Math.floor(progress / 100 * 7);
+        setStatus(`🎬 ${status}`, overallProgress);
+      });
+      // Ersetze WebM durch MP4
+      if (state.videoUrl) URL.revokeObjectURL(state.videoUrl);
+      state.videoBlob = mp4Blob;
+      state.videoUrl = URL.createObjectURL(mp4Blob);
+      state.videoFormat = 'mp4';
+      console.log('✅ Auto-konvertiert zu MP4');
+    } catch (mp4Err) {
+      console.warn('⚠️ Auto-MP4 fehlgeschlagen, WebM bleibt:', mp4Err.message);
+      // Nicht abbrechen - User kann WebM downloaden + manuell konvertieren
+    }
     
     // In Bibliothek speichern
     saveToLibrary();
@@ -791,7 +977,12 @@ ${parentContext}
 ${selectedTwist}
 → Baue die finale Auflösung um genau diesen Twist herum.
 
-═══════════════════════════════════
+${state._predefinedHook ? `🪝 VORGEGEBENER HOOK (vom User gewählt - MUSS verwendet werden!):
+"${state._predefinedHook}"
+→ Nutze GENAU diesen Hook als ersten Satz. Schreibe NICHT deinen eigenen!
+→ Baue die Story so, dass dieser Hook perfekt zur Auflösung führt.
+
+` : ''}═══════════════════════════════════
 ABSOLUTE REGELN:
 ═══════════════════════════════════
 
@@ -2024,44 +2215,31 @@ async function renderFinalVideo() {
     await audioContext.resume();
   }
   
-  // Versuche zuerst MP4 (manche Android-Chrome unterstützen das nativ!)
-  // Falls nicht: WebM-Fallback
+  // ⚠️ WICHTIG: Wir nutzen ABSICHTLICH NUR WebM beim Rendering!
+  // 
+  // Android Chrome behauptet zwar MP4 zu unterstützen (mit AAC),
+  // packt aber heimlich OPUS-Audio in den Container.
+  // Diese MP4s werden von TikTok abgelehnt ("Dekodieren nicht möglich").
+  //
+  // Stattdessen: WebM (mit Opus) → später via FFmpeg zu echtem MP4 (mit AAC) konvertieren.
   let mimeType = '';
   let outputExtension = 'webm';
   
-  const mp4Options = [
-    'video/mp4;codecs=h264,aac',
-    'video/mp4;codecs=avc1,mp4a',
-    'video/mp4'
+  const webmOptions = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm'
   ];
-  
-  for (const mp4 of mp4Options) {
-    if (MediaRecorder.isTypeSupported(mp4)) {
-      mimeType = mp4;
-      outputExtension = 'mp4';
-      console.log('✓ Browser unterstützt MP4 direkt!', mp4);
+  for (const webm of webmOptions) {
+    if (MediaRecorder.isTypeSupported(webm)) {
+      mimeType = webm;
       break;
     }
   }
   
-  // Fallback auf WebM
-  if (!mimeType) {
-    const webmOptions = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm'
-    ];
-    for (const webm of webmOptions) {
-      if (MediaRecorder.isTypeSupported(webm)) {
-        mimeType = webm;
-        break;
-      }
-    }
-  }
-  
-  // Format global speichern damit Download weiß welche Endung
+  // Format global speichern
   state.videoFormat = outputExtension;
-  console.log(`📹 Video-Format: ${mimeType} → .${outputExtension}`);
+  console.log(`📹 Video-Format: ${mimeType} → .${outputExtension} (wird später via FFmpeg zu MP4 konvertiert)`);
   
   const recorder = new MediaRecorder(stream, { 
     mimeType: mimeType,
@@ -2593,6 +2771,7 @@ function render() {
   else if (state.view === 'generator') {
     if (state.step === 'setup') c.innerHTML = renderSetup();
     else if (state.step === 'running') c.innerHTML = renderRunning();
+    else if (state.step === 'hookSelection') c.innerHTML = renderHookSelection();
     else if (state.step === 'done') c.innerHTML = renderDone();
   }
   attachEvents();
@@ -2691,6 +2870,16 @@ function renderSettings() {
           <button class="option ${state.useMusic ? 'active' : ''}" onclick="toggleMusic()" style="text-align: center;">
             ${state.useMusic ? '✓ Hintergrund-Musik AN' : 'Hintergrund-Musik AUS'}
           </button>
+        </div>
+        
+        <div style="margin-bottom: 14px;">
+          <button class="option ${state.useHookForge ? 'active' : ''}" onclick="toggleHookForge()" style="text-align: center;">
+            ${state.useHookForge ? '✓ Hook-Schmiede AN' : 'Hook-Schmiede AUS'}
+          </button>
+          <p style="font-size: 10px; color: #6a4a3a; margin-top: 6px; text-align: center; line-height: 1.5;">
+            🪝 Wähle aus 3 KI-Hooks den besten vor jeder Story.<br>
+            Längere Generierung (~30s) - aber deutlich stärkere Hooks.
+          </p>
         </div>
         
         <button class="btn btn-primary" onclick="saveSettings()">SPEICHERN</button>
@@ -2983,6 +3172,84 @@ function renderSetup() {
       </button>
     </div>
   `;
+}
+
+function renderHookSelection() {
+  const genreObj = horrorGenres.find(g => g.id === state.genre);
+  
+  return `
+    <div class="fade">
+      <div class="card" style="text-align: center;">
+        <h2 class="title" style="margin-bottom: 6px;">🪝 HOOK-SCHMIEDE</h2>
+        <p style="font-size: 12px; color: #c9b29b; line-height: 1.6;">
+          Wähle den stärksten Hook für deine Story.<br>
+          Die KI baut die ganze Geschichte um deine Wahl herum.
+        </p>
+      </div>
+      
+      <div class="card" style="padding: 12px;">
+        <div style="font-size: 11px; color: #8b6f5a; margin-bottom: 12px; text-align: center; letter-spacing: 2px;">
+          ${genreObj.emoji} ${genreObj.label.toUpperCase()}
+        </div>
+        
+        ${state.hookCandidates.map((hook, idx) => `
+          <button onclick="selectHookAndContinue(${idx})" 
+            style="display: block; width: 100%; background: linear-gradient(135deg, rgba(60,15,15,0.6), rgba(40,10,10,0.4)); 
+                   border: 2px solid #8b0000; padding: 22px 16px; margin-bottom: 12px; 
+                   cursor: pointer; color: #ffffff; font-size: 17px; font-family: 'Georgia', serif; 
+                   line-height: 1.4; text-align: center; letter-spacing: 1px; 
+                   text-shadow: 0 0 10px rgba(255,80,80,0.4); 
+                   transition: all 0.2s; font-weight: bold;">
+            <div style="font-size: 10px; color: #c98080; margin-bottom: 6px; letter-spacing: 3px; font-weight: normal;">
+              OPTION ${idx + 1}
+            </div>
+            ${escapeHtml(hook)}
+          </button>
+        `).join('')}
+      </div>
+      
+      <div class="card" style="text-align: center; padding: 14px;">
+        <button onclick="regenerateHooks()" 
+          style="background: rgba(40,20,20,0.8); border: 1px solid #3a1a1a; padding: 10px 16px; 
+                 cursor: pointer; color: #c9b29b; font-size: 12px; font-family: inherit; letter-spacing: 1px; margin-bottom: 8px;">
+          🎲 3 NEUE HOOKS GENERIEREN
+        </button>
+        <br>
+        <button onclick="cancelHookSelection()" 
+          style="background: transparent; border: none; padding: 6px; cursor: pointer; 
+                 color: #6a4a3a; font-size: 11px; font-family: inherit; text-decoration: underline;">
+          Abbrechen
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+async function regenerateHooks() {
+  state.running = true;
+  state.step = 'running';
+  state.status = '🪝 3 neue Hooks werden generiert...';
+  state.progress = 5;
+  render();
+  
+  try {
+    await generateHookCandidates();
+    state.step = 'hookSelection';
+    state.running = false;
+    render();
+  } catch(e) {
+    showError('Hook-Generierung fehlgeschlagen');
+    state.step = 'setup';
+    state.running = false;
+    render();
+  }
+}
+
+function cancelHookSelection() {
+  state.awaitingHookSelection = false;
+  state.hookCandidates = [];
+  state.step = 'setup';
+  render();
 }
 
 function renderRunning() {
@@ -3550,6 +3817,12 @@ function toggleMusic() {
   state.useMusic = !state.useMusic; 
   Storage.set('useMusic', state.useMusic.toString());
   render(); 
+}
+
+function toggleHookForge() {
+  state.useHookForge = !state.useHookForge;
+  Storage.set('useHookForge', state.useHookForge.toString());
+  render();
 }
 // ========== API-KEY TESTER ==========
 async function testApiKey(provider, btn) {
