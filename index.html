@@ -3064,20 +3064,7 @@ function renderDone() {
       ${state.videoUrl ? `
         <div class="card">
           <h3 class="title">🎥 DEIN VIDEO</h3>
-          <video class="video-preview" id="finalVideoEl" src="${state.videoUrl}" controls playsinline preload="none" poster="${state.coverUrl || ''}" muted></video>
-          <script>
-            // Sofort blockieren falls Browser trotzdem autoplay versucht
-            (function() {
-              const v = document.getElementById('finalVideoEl');
-              if (v) {
-                v.pause();
-                v.currentTime = 0;
-                v.muted = false; // Mute wieder weg, damit User normal abspielen kann
-                v.addEventListener('loadeddata', () => { v.pause(); }, { once: true });
-                v.addEventListener('canplay', () => { v.pause(); }, { once: true });
-              }
-            })();
-          </script>
+          <video class="video-preview" id="finalVideoEl" src="${state.videoUrl}" controls playsinline preload="none" poster="${state.coverUrl || ''}" onloadeddata="this.pause()" oncanplay="this.pause()"></video>
           
           ${state.videoFormat === 'mp4' ? `
             <div style="background: rgba(0,139,0,0.15); border: 1px solid #2a5a2a; padding: 8px 12px; margin-bottom: 10px; font-size: 11px; color: #90c890;">
