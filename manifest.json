@@ -1,0 +1,32 @@
+{
+  "name": "NACHTZEUGE - Horror Story Generator",
+  "short_name": "NACHTZEUGE",
+  "description": "Erstelle virale Horror-Geschichten für TikTok",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0606",
+  "theme_color": "#0a0606",
+  "lang": "de",
+  "categories": ["entertainment", "lifestyle", "productivity"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
